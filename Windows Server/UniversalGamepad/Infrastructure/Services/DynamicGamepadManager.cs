@@ -1,10 +1,10 @@
-﻿using Nefarius.ViGEm.Client;
-using System;
+﻿using System;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Nefarius.ViGEm.Client;
 using UniversalGamepad.Core.Enums;
 using UniversalGamepad.Core.Interfaces;
 using UniversalGamepad.Core.Models;
@@ -20,9 +20,13 @@ public class DynamicGamepadManager : IGamepadManager
     private readonly object _lockObject = new();
     private CancellationTokenSource? _cts;
     private Task? _cleanupTask;
+    private readonly bool[] _allocatedSlots = new bool[MaxControllers];
+
+    public event Action<int, bool, GamepadType?>? OnSlotChanged;
 
     private class ClientSession
     {
+        public int SlotIndex { get; set; }
         public UniversalGamepad.Core.Interfaces.IVirtualGamepad Gamepad { get; set; } = null!;
         public DateTime LastSeen { get; set; }
     }
@@ -56,21 +60,49 @@ public class DynamicGamepadManager : IGamepadManager
                 if (_sessions.Count >= MaxControllers || _sessions.ContainsKey(clientIp)) return;
                 if (_vigemClient == null) return;
 
-                GamepadType type = (GamepadType)packet[3];
-                UniversalGamepad.Core.Interfaces.IVirtualGamepad? newGamepad = type switch
+                int assignedSlot = -1;
+                for (int i = 0; i < MaxControllers; i++)
                 {
-                    GamepadType.Xbox360 => new VirtualXbox360(_vigemClient),
-                    GamepadType.DualShock4 => new VirtualDualShock4(_vigemClient),
-                    _ => null
-                };
+                    if (!_allocatedSlots[i])
+                    {
+                        _allocatedSlots[i] = true;
+                        assignedSlot = i + 1;
+                        break;
+                    }
+                }
 
-                if (newGamepad == null) return;
+                if (assignedSlot == -1) return;
+
+                byte rawType = packet[3];
+                GamepadType type;
+                UniversalGamepad.Core.Interfaces.IVirtualGamepad? newGamepad = null;
+
+                if (rawType == 1)
+                {
+                    type = GamepadType.Xbox360;
+                    newGamepad = new VirtualXbox360(_vigemClient);
+                }
+                else if (rawType == 2)
+                {
+                    type = GamepadType.DualShock4;
+                    newGamepad = new VirtualDualShock4(_vigemClient);
+                }
+                else
+                {
+                    _allocatedSlots[assignedSlot - 1] = false;
+                    return;
+                }
 
                 newGamepad.Connect();
 
-                var session = new ClientSession { Gamepad = newGamepad, LastSeen = DateTime.UtcNow };
-                if (!_sessions.TryAdd(clientIp, session))
+                var session = new ClientSession { SlotIndex = assignedSlot, Gamepad = newGamepad, LastSeen = DateTime.UtcNow };
+                if (_sessions.TryAdd(clientIp, session))
                 {
+                    OnSlotChanged?.Invoke(assignedSlot, true, type);
+                }
+                else
+                {
+                    _allocatedSlots[assignedSlot - 1] = false;
                     newGamepad.Disconnect();
                 }
             }
@@ -89,6 +121,8 @@ public class DynamicGamepadManager : IGamepadManager
     }
 
 
+
+
     private async Task CleanupLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -104,7 +138,12 @@ public class DynamicGamepadManager : IGamepadManager
                     {
                         if (_sessions.TryRemove(kp.Key, out var expiredSession))
                         {
+                            lock (_lockObject)
+                            {
+                                _allocatedSlots[expiredSession.SlotIndex - 1] = false;
+                            }
                             expiredSession.Gamepad.Disconnect();
+                            OnSlotChanged?.Invoke(expiredSession.SlotIndex, false, null);
                         }
                     }
                 }
@@ -138,11 +177,13 @@ public class DynamicGamepadManager : IGamepadManager
         foreach (var session in _sessions.Values)
         {
             session.Gamepad.Disconnect();
+            OnSlotChanged?.Invoke(session.SlotIndex, false, null);
         }
         _sessions.Clear();
 
         lock (_lockObject)
         {
+            Array.Clear(_allocatedSlots, 0, _allocatedSlots.Length);
             _vigemClient?.Dispose();
             _vigemClient = null;
         }

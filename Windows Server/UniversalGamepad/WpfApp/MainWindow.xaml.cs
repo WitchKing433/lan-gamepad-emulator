@@ -1,11 +1,12 @@
-﻿using Microsoft.Extensions.DependencyInjection;
-using System;
+﻿using System;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using Microsoft.Extensions.DependencyInjection;
+using UniversalGamepad.Core.Enums;
 using UniversalGamepad.Core.Interfaces;
 using UniversalGamepad.Core.Services;
 
@@ -16,6 +17,7 @@ public partial class MainWindow : Window
     private readonly EmulatorEngine _engine;
     private bool _isServerRunning;
     private bool _isDiscoveryRunning;
+    private int _activeConnectionsCount;
     private const int ServerPort = 55555;
 
     [DllImport("dwmapi.dll")]
@@ -55,6 +57,12 @@ public partial class MainWindow : Window
 
     private void BtnToggleDiscovery_Click(object sender, RoutedEventArgs e)
     {
+        if (!_isServerRunning)
+        {
+            MessageBox.Show("Cannot enable network discovery while emulation is inactive. Please start emulation first.", "Discovery Blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         if (!_isDiscoveryRunning)
         {
             StartDiscoveryProcess();
@@ -64,6 +72,7 @@ public partial class MainWindow : Window
             StopDiscoveryProcess();
         }
     }
+
 
     private void BtnRefreshIp_Click(object sender, RoutedEventArgs e)
     {
@@ -76,6 +85,9 @@ public partial class MainWindow : Window
         {
             var listener = App.ServiceProvider.GetRequiredService<IInputListener>();
             listener.OnErrorOccurred += HandleNetworkError;
+
+            var manager = App.ServiceProvider.GetRequiredService<IGamepadManager>();
+            manager.OnSlotChanged += HandleSlotUIChanged;
 
             _engine.StartEngine(ServerPort);
             _isServerRunning = true;
@@ -105,6 +117,12 @@ public partial class MainWindow : Window
             listener.OnErrorOccurred -= HandleNetworkError;
         }
 
+        var manager = App.ServiceProvider.GetService<IGamepadManager>();
+        if (manager != null)
+        {
+            manager.OnSlotChanged -= HandleSlotUIChanged;
+        }
+
         _engine.StopEngine();
         _isServerRunning = false;
 
@@ -117,17 +135,9 @@ public partial class MainWindow : Window
         {
             StopDiscoveryProcess();
         }
-    }
 
-    private void HandleNetworkError(Exception ex)
-    {
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            StopServerProcess();
-            MessageBox.Show($"Network server failed unexpectedly:\n{ex.Message}", "Critical Network Error", MessageBoxButton.OK, MessageBoxImage.Error);
-        }));
+        ResetAllSlotsUI();
     }
-
 
     private void StartDiscoveryProcess()
     {
@@ -159,6 +169,105 @@ public partial class MainWindow : Window
         TxtDiscovery.Text = "Discovery Disabled";
     }
 
+    private void HandleNetworkError(Exception ex)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            StopServerProcess();
+            MessageBox.Show($"Network server failed unexpectedly:\n{ex.Message}", "Critical Network Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }));
+    }
+
+    private void HandleSlotUIChanged(int slotIndex, bool isConnected, GamepadType? type)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            UpdateSlotVisuals(slotIndex, isConnected, type);
+            UpdateTotalConnectedText();
+        }));
+    }
+
+    private void UpdateSlotVisuals(int slotIndex, bool isConnected, GamepadType? type)
+    {
+        var border = slotIndex switch
+        {
+            1 => SlotBorder1,
+            2 => SlotBorder2,
+            3 => SlotBorder3,
+            4 => SlotBorder4,
+            _ => null
+        };
+
+        var icon = slotIndex switch
+        {
+            1 => SlotIcon1,
+            2 => SlotIcon2,
+            3 => SlotIcon3,
+            4 => SlotIcon4,
+            _ => null
+        };
+
+        var txt = slotIndex switch
+        {
+            1 => SlotTxt1,
+            2 => SlotTxt2,
+            3 => SlotTxt3,
+            4 => SlotTxt4,
+            _ => null
+        };
+
+        if (border == null || icon == null || txt == null) return;
+
+        if (isConnected && type.HasValue)
+        {
+            if (type.Value == GamepadType.Xbox360)
+            {
+                border.Background = new SolidColorBrush(Color.FromRgb(16, 124, 17));
+                border.BorderBrush = new SolidColorBrush(Color.FromRgb(26, 144, 27));
+                icon.Text = "🎮";
+                txt.Text = "Xbox 360 Mode";
+                txt.Foreground = Brushes.White;
+            }
+            else if (type.Value == GamepadType.DualShock4)
+            {
+                border.Background = new SolidColorBrush(Color.FromRgb(0, 67, 156));
+                border.BorderBrush = new SolidColorBrush(Color.FromRgb(10, 87, 176));
+                icon.Text = "🎮";
+                txt.Text = "DualShock 4 Mode";
+                txt.Foreground = Brushes.White;
+            }
+        }
+        else
+        {
+            border.Background = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+            border.BorderBrush = new SolidColorBrush(Color.FromRgb(45, 45, 45));
+            icon.Text = "🎮";
+            txt.Text = "Disconnected";
+            txt.Foreground = new SolidColorBrush(Color.FromRgb(68, 68, 68));
+        }
+    }
+
+    private void UpdateTotalConnectedText()
+    {
+        int count = 0;
+        if (SlotTxt1.Text != "Disconnected") count++;
+        if (SlotTxt2.Text != "Disconnected") count++;
+        if (SlotTxt3.Text != "Disconnected") count++;
+        if (SlotTxt4.Text != "Disconnected") count++;
+
+        _activeConnectionsCount = count;
+        TxtTotalConnected.Text = $"Total Connected: {_activeConnectionsCount} / 4";
+    }
+
+    private void ResetAllSlotsUI()
+    {
+        for (int i = 1; i <= 4; i++)
+        {
+            UpdateSlotVisuals(i, false, null);
+        }
+        UpdateTotalConnectedText();
+    }
+
     private void RefreshNetworkIp()
     {
         TxtIpAddress.Text = GetLocalIPAddress();
@@ -186,8 +295,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
-        if (_isServerRunning) _engine.StopEngine();
-        if (_isDiscoveryRunning) _engine.StopBroadcast();
+        StopServerProcess();
         base.OnClosed(e);
     }
 }

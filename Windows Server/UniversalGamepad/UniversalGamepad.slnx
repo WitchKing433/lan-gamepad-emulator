@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Core/Core.csproj" />
   <Project Path="Infrastructure/Infrastructure.csproj" />
+  <Project Path="TactPad.Tester/TactPad.Tester.csproj" Id="53db1348-8ef9-49e2-bbe3-556fc7411856" />
   <Project Path="WpfApp/WpfApp.csproj" Id="8a8c3026-b4f7-4468-9138-bbe84a22f52b" />
 </Solution>

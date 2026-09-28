@@ -60,7 +60,7 @@ public class UdpInputListener : IInputListener
 
     private async Task ListenLoopAsync(CancellationToken ct)
     {
-        byte[] sharedBuffer = new byte[16];
+        byte[] sharedBuffer = new byte[65535];
         Memory<byte> memoryBuffer = sharedBuffer;
         EndPoint remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
 
@@ -96,4 +96,5 @@ public class UdpInputListener : IInputListener
             }
         }
     }
+
 }

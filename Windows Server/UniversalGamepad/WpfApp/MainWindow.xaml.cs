@@ -79,6 +79,11 @@ public partial class MainWindow : Window
             BtnToggleServer.Background = new SolidColorBrush(Color.FromRgb(255, 59, 48));
             StatusIndicator.Fill = new SolidColorBrush(Color.FromRgb(52, 199, 89));
             TxtStatus.Text = "Server Active";
+
+            if (!_isDiscoveryRunning)
+            {
+                StartDiscoveryProcess();
+            }
         }
         catch (Exception ex)
         {
@@ -96,6 +101,11 @@ public partial class MainWindow : Window
         BtnToggleServer.Background = new SolidColorBrush(Color.FromRgb(0, 122, 204));
         StatusIndicator.Fill = new SolidColorBrush(Color.FromRgb(255, 59, 48));
         TxtStatus.Text = "Server Inactive";
+
+        if (_isDiscoveryRunning)
+        {
+            StopDiscoveryProcess();
+        }
     }
 
     private void StartDiscoveryProcess()

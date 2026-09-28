@@ -14,6 +14,7 @@ public class DynamicGamepadManager : IGamepadManager
 {
     private ViGEmClient _vigemClient;
     private const int MaxControllers = 4;
+    private const byte ProtocolMagicByte = 0x54;
 
     private class ClientSession
     {
@@ -31,11 +32,20 @@ public class DynamicGamepadManager : IGamepadManager
 
     public void HandleClientPacket(string clientIp, ReadOnlySpan<byte> packet)
     {
-        if (packet.Length == 1)
+        if (packet.Length < 3) return;
+
+        if (packet[0] != ProtocolMagicByte) return;
+
+        byte messageType = packet[1];
+        byte payloadLength = packet[2];
+
+        if (packet.Length != 3 + payloadLength) return;
+
+        if (messageType == 1 && payloadLength == 1)
         {
             if (_sessions.Count >= MaxControllers || _sessions.ContainsKey(clientIp)) return;
 
-            GamepadType type = (GamepadType)packet[0];
+            GamepadType type = (GamepadType)packet[3];
             UniversalGamepad.Core.Interfaces.IVirtualGamepad newGamepad = type switch
             {
                 GamepadType.Xbox360 => new VirtualXbox360(_vigemClient),
@@ -52,12 +62,12 @@ public class DynamicGamepadManager : IGamepadManager
             return;
         }
 
-        if (packet.Length >= 6 && _sessions.TryGetValue(clientIp, out var activeSession))
+        if (messageType == 2 && payloadLength == 6 && _sessions.TryGetValue(clientIp, out var activeSession))
         {
             activeSession.LastSeen = DateTime.UtcNow;
 
-            ushort buttons = BitConverter.ToUInt16(packet.Slice(0, 2));
-            var state = new GamepadState(buttons, packet[2], packet[3], packet[4], packet[5]);
+            ushort buttons = BitConverter.ToUInt16(packet.Slice(3, 2));
+            var state = new GamepadState(buttons, packet[5], packet[6], packet[7], packet[8]);
 
             activeSession.Gamepad.Update(state);
         }

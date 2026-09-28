@@ -1,8 +1,10 @@
-﻿using System;
+﻿using Nefarius.ViGEm.Client;
+using System;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
-using Nefarius.ViGEm.Client;
 using UniversalGamepad.Core.Enums;
 using UniversalGamepad.Core.Interfaces;
 using UniversalGamepad.Core.Models;
@@ -12,13 +14,16 @@ namespace UniversalGamepad.Infrastructure.Services;
 
 public class DynamicGamepadManager : IGamepadManager
 {
-    private ViGEmClient _vigemClient;
+    private ViGEmClient? _vigemClient;
     private const int MaxControllers = 4;
     private const byte ProtocolMagicByte = 0x54;
+    private readonly object _lockObject = new();
+    private CancellationTokenSource? _cts;
+    private Task? _cleanupTask;
 
     private class ClientSession
     {
-        public UniversalGamepad.Core.Interfaces.IVirtualGamepad Gamepad { get; set; }
+        public UniversalGamepad.Core.Interfaces.IVirtualGamepad Gamepad { get; set; } = null!;
         public DateTime LastSeen { get; set; }
     }
 
@@ -27,7 +32,8 @@ public class DynamicGamepadManager : IGamepadManager
     public void Initialize()
     {
         _vigemClient = new ViGEmClient();
-        Task.Run(CleanupLoopAsync);
+        _cts = new CancellationTokenSource();
+        _cleanupTask = Task.Run(() => CleanupLoopAsync(_cts.Token));
     }
 
     public void HandleClientPacket(string clientIp, ReadOnlySpan<byte> packet)
@@ -45,20 +51,29 @@ public class DynamicGamepadManager : IGamepadManager
         {
             if (_sessions.Count >= MaxControllers || _sessions.ContainsKey(clientIp)) return;
 
-            GamepadType type = (GamepadType)packet[3];
-            UniversalGamepad.Core.Interfaces.IVirtualGamepad newGamepad = type switch
+            lock (_lockObject)
             {
-                GamepadType.Xbox360 => new VirtualXbox360(_vigemClient),
-                GamepadType.DualShock4 => new VirtualDualShock4(_vigemClient),
-                _ => null
-            };
+                if (_sessions.Count >= MaxControllers || _sessions.ContainsKey(clientIp)) return;
+                if (_vigemClient == null) return;
 
-            if (newGamepad == null) return;
+                GamepadType type = (GamepadType)packet[3];
+                UniversalGamepad.Core.Interfaces.IVirtualGamepad? newGamepad = type switch
+                {
+                    GamepadType.Xbox360 => new VirtualXbox360(_vigemClient),
+                    GamepadType.DualShock4 => new VirtualDualShock4(_vigemClient),
+                    _ => null
+                };
 
-            newGamepad.Connect();
+                if (newGamepad == null) return;
 
-            var session = new ClientSession { Gamepad = newGamepad, LastSeen = DateTime.UtcNow };
-            _sessions.TryAdd(clientIp, session);
+                newGamepad.Connect();
+
+                var session = new ClientSession { Gamepad = newGamepad, LastSeen = DateTime.UtcNow };
+                if (!_sessions.TryAdd(clientIp, session))
+                {
+                    newGamepad.Disconnect();
+                }
+            }
             return;
         }
 
@@ -66,41 +81,70 @@ public class DynamicGamepadManager : IGamepadManager
         {
             activeSession.LastSeen = DateTime.UtcNow;
 
-            ushort buttons = BitConverter.ToUInt16(packet.Slice(3, 2));
+            ushort buttons = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(3, 2));
             var state = new GamepadState(buttons, packet[5], packet[6], packet[7], packet[8]);
 
             activeSession.Gamepad.Update(state);
         }
     }
 
-    private async Task CleanupLoopAsync()
-    {
-        while (_vigemClient != null)
-        {
-            await Task.Delay(2000);
-            var now = DateTime.UtcNow;
 
-            foreach (var kp in _sessions.ToList())
+    private async Task CleanupLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
             {
-                if ((now - kp.Value.LastSeen).TotalSeconds > 5)
+                await Task.Delay(2000, ct);
+                var now = DateTime.UtcNow;
+
+                foreach (var kp in _sessions.ToList())
                 {
-                    if (_sessions.TryRemove(kp.Key, out var expiredSession))
+                    if ((now - kp.Value.LastSeen).TotalSeconds > 5)
                     {
-                        expiredSession.Gamepad.Disconnect();
+                        if (_sessions.TryRemove(kp.Key, out var expiredSession))
+                        {
+                            expiredSession.Gamepad.Disconnect();
+                        }
                     }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch
+            {
             }
         }
     }
 
     public void Shutdown()
     {
+        if (_cts != null)
+        {
+            _cts.Cancel();
+            try
+            {
+                _cleanupTask?.GetAwaiter().GetResult();
+            }
+            catch
+            {
+            }
+            _cts.Dispose();
+            _cts = null;
+        }
+
         foreach (var session in _sessions.Values)
         {
             session.Gamepad.Disconnect();
         }
         _sessions.Clear();
-        _vigemClient?.Dispose();
-        _vigemClient = null;
+
+        lock (_lockObject)
+        {
+            _vigemClient?.Dispose();
+            _vigemClient = null;
+        }
     }
 }

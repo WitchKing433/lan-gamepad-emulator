@@ -1,10 +1,12 @@
-﻿using System;
+﻿using Microsoft.Extensions.DependencyInjection;
+using System;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
+using UniversalGamepad.Core.Interfaces;
 using UniversalGamepad.Core.Services;
 
 namespace UniversalGamepad.WpfApp;
@@ -72,6 +74,9 @@ public partial class MainWindow : Window
     {
         try
         {
+            var listener = App.ServiceProvider.GetRequiredService<IInputListener>();
+            listener.OnErrorOccurred += HandleNetworkError;
+
             _engine.StartEngine(ServerPort);
             _isServerRunning = true;
 
@@ -94,6 +99,12 @@ public partial class MainWindow : Window
 
     private void StopServerProcess()
     {
+        var listener = App.ServiceProvider.GetService<IInputListener>();
+        if (listener != null)
+        {
+            listener.OnErrorOccurred -= HandleNetworkError;
+        }
+
         _engine.StopEngine();
         _isServerRunning = false;
 
@@ -107,6 +118,16 @@ public partial class MainWindow : Window
             StopDiscoveryProcess();
         }
     }
+
+    private void HandleNetworkError(Exception ex)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            StopServerProcess();
+            MessageBox.Show($"Network server failed unexpectedly:\n{ex.Message}", "Critical Network Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }));
+    }
+
 
     private void StartDiscoveryProcess()
     {

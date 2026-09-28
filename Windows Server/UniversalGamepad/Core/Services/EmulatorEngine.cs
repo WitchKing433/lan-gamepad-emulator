@@ -21,15 +21,23 @@ public class EmulatorEngine
         _gamepadManager.Initialize();
         _listener.OnPacketReceived += ProcessRawPacket;
         _listener.Start(port);
-        _broadcaster.Start(port);
     }
 
     public void StopEngine()
     {
-        _broadcaster.Stop();
         _listener.Stop();
         _listener.OnPacketReceived -= ProcessRawPacket;
         _gamepadManager.Shutdown();
+    }
+
+    public void StartBroadcast(int port)
+    {
+        _broadcaster.Start(port);
+    }
+
+    public void StopBroadcast()
+    {
+        _broadcaster.Stop();
     }
 
     private void ProcessRawPacket(string clientIp, ReadOnlyMemory<byte> buffer)

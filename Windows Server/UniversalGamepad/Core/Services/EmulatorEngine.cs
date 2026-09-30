@@ -5,9 +5,11 @@ namespace UniversalGamepad.Core.Services;
 
 public class EmulatorEngine
 {
+    private readonly object _lifecycleLock = new();
     private readonly IInputListener _listener;
     private readonly IGamepadManager _gamepadManager;
     private readonly IDiscoveryBroadcaster _broadcaster;
+    private bool _isRunning;
 
     public EmulatorEngine(IInputListener listener, IGamepadManager gamepadManager, IDiscoveryBroadcaster broadcaster)
     {
@@ -18,16 +20,54 @@ public class EmulatorEngine
 
     public void StartEngine(int port)
     {
-        _gamepadManager.Initialize();
-        _listener.OnPacketReceived += ProcessRawPacket;
-        _listener.Start(port);
+        if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
+
+        lock (_lifecycleLock)
+        {
+            if (_isRunning) return;
+
+            try
+            {
+                _gamepadManager.Initialize();
+                _listener.OnPacketReceived -= ProcessRawPacket;
+                _listener.OnPacketReceived += ProcessRawPacket;
+                _listener.Start(port);
+                _isRunning = true;
+            }
+            catch
+            {
+                _listener.OnPacketReceived -= ProcessRawPacket;
+                try
+                {
+                    _listener.Stop();
+                }
+                finally
+                {
+                    _gamepadManager.Shutdown();
+                }
+
+                throw;
+            }
+        }
     }
 
     public void StopEngine()
     {
-        _listener.Stop();
-        _listener.OnPacketReceived -= ProcessRawPacket;
-        _gamepadManager.Shutdown();
+        lock (_lifecycleLock)
+        {
+            if (!_isRunning) return;
+
+            _isRunning = false;
+            _listener.OnPacketReceived -= ProcessRawPacket;
+            try
+            {
+                _listener.Stop();
+            }
+            finally
+            {
+                _gamepadManager.Shutdown();
+            }
+        }
     }
 
     public void StartBroadcast(int port)

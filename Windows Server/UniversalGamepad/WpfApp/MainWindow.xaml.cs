@@ -2,6 +2,8 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -18,6 +20,7 @@ public partial class MainWindow : Window
     private bool _isServerRunning;
     private bool _isDiscoveryRunning;
     private int _activeConnectionsCount;
+    private int _packetProcessingErrorReported;
     private const int ServerPort = 55555;
     private const int DiscoveryPort = 55554;
 
@@ -84,8 +87,10 @@ public partial class MainWindow : Window
     {
         try
         {
+            Interlocked.Exchange(ref _packetProcessingErrorReported, 0);
             var listener = App.ServiceProvider.GetRequiredService<IInputListener>();
             listener.OnErrorOccurred += HandleNetworkError;
+            listener.OnPacketProcessingError += HandlePacketProcessingError;
 
             var broadcaster = App.ServiceProvider.GetRequiredService<IDiscoveryBroadcaster>();
             broadcaster.OnErrorOccurred += HandleBroadcastError;
@@ -119,6 +124,7 @@ public partial class MainWindow : Window
         if (listener != null)
         {
             listener.OnErrorOccurred -= HandleNetworkError;
+            listener.OnPacketProcessingError -= HandlePacketProcessingError;
         }
 
         var broadcaster = App.ServiceProvider.GetService<IDiscoveryBroadcaster>();
@@ -147,6 +153,21 @@ public partial class MainWindow : Window
         }
 
         ResetAllSlotsUI();
+    }
+
+    private void HandlePacketProcessingError(Exception ex)
+    {
+        Trace.TraceError($"UDP packet processing failed: {ex}");
+
+        if (Interlocked.Exchange(ref _packetProcessingErrorReported, 1) != 0) return;
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!_isServerRunning) return;
+
+            TxtStatus.Text = "Input processing error (see diagnostics)";
+            StatusIndicator.Fill = new SolidColorBrush(Color.FromRgb(255, 159, 10));
+        }));
     }
 
     private void HandleBroadcastError(Exception ex)

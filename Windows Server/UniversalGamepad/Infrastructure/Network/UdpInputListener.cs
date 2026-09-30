@@ -16,6 +16,7 @@ public class UdpInputListener : IInputListener
 
     public event Action<string, ReadOnlyMemory<byte>>? OnPacketReceived;
     public event Action<Exception>? OnErrorOccurred;
+    public event Action<Exception>? OnPacketProcessingError;
 
     public void Start(int port)
     {
@@ -101,7 +102,14 @@ public class UdpInputListener : IInputListener
                 if (result.ReceivedBytes >= 1)
                 {
                     string clientIp = ((IPEndPoint)result.RemoteEndPoint).Address.ToString();
-                    OnPacketReceived?.Invoke(clientIp, memoryBuffer.Slice(0, result.ReceivedBytes));
+                    try
+                    {
+                        OnPacketReceived?.Invoke(clientIp, memoryBuffer.Slice(0, result.ReceivedBytes));
+                    }
+                    catch (Exception ex)
+                    {
+                        OnPacketProcessingError?.Invoke(ex);
+                    }
                 }
             }
             catch (OperationCanceledException)

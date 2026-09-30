@@ -19,15 +19,36 @@ public class UdpDiscoveryBroadcaster : IDiscoveryBroadcaster
 
     public void Start(int port)
     {
+        if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));
+
         lock (_lockObject)
         {
             if (_broadcastSocket != null) return;
 
-            _broadcastSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            _broadcastSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast, true);
+            Socket? socket = null;
+            CancellationTokenSource? cancellationSource = null;
 
-            _cts = new CancellationTokenSource();
-            _broadcastTask = Task.Run(() => BroadcastLoopAsync(port, _cts.Token));
+            try
+            {
+                socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.Broadcast, true);
+
+                cancellationSource = new CancellationTokenSource();
+                _broadcastSocket = socket;
+                _cts = cancellationSource;
+                _broadcastTask = Task.Run(() => BroadcastLoopAsync(port, cancellationSource.Token));
+            }
+            catch
+            {
+                _broadcastSocket = null;
+                _cts = null;
+                _broadcastTask = null;
+
+                try { socket?.Dispose(); } catch { }
+                try { cancellationSource?.Dispose(); } catch { }
+
+                throw;
+            }
         }
     }
 

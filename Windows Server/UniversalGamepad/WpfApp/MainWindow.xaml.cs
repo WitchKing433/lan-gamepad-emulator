@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private bool _isDiscoveryRunning;
     private int _activeConnectionsCount;
     private const int ServerPort = 55555;
+    private const int DiscoveryPort = 55554;
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
@@ -86,6 +87,9 @@ public partial class MainWindow : Window
             var listener = App.ServiceProvider.GetRequiredService<IInputListener>();
             listener.OnErrorOccurred += HandleNetworkError;
 
+            var broadcaster = App.ServiceProvider.GetRequiredService<IDiscoveryBroadcaster>();
+            broadcaster.OnErrorOccurred += HandleBroadcastError;
+
             var manager = App.ServiceProvider.GetRequiredService<IGamepadManager>();
             manager.OnSlotChanged += HandleSlotUIChanged;
 
@@ -117,6 +121,12 @@ public partial class MainWindow : Window
             listener.OnErrorOccurred -= HandleNetworkError;
         }
 
+        var broadcaster = App.ServiceProvider.GetService<IDiscoveryBroadcaster>();
+        if (broadcaster != null)
+        {
+            broadcaster.OnErrorOccurred -= HandleBroadcastError;
+        }
+
         var manager = App.ServiceProvider.GetService<IGamepadManager>();
         if (manager != null)
         {
@@ -139,11 +149,20 @@ public partial class MainWindow : Window
         ResetAllSlotsUI();
     }
 
+    private void HandleBroadcastError(Exception ex)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            StopDiscoveryProcess();
+            MessageBox.Show($"Network discovery failed:\n{ex.Message}", "Broadcast Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }));
+    }
+
     private void StartDiscoveryProcess()
     {
         try
         {
-            _engine.StartBroadcast(ServerPort);
+            _engine.StartBroadcast(DiscoveryPort);
             _isDiscoveryRunning = true;
 
             BtnToggleDiscovery.Content = "Disable Discovery";
@@ -275,22 +294,50 @@ public partial class MainWindow : Window
 
     private string GetLocalIPAddress()
     {
-        foreach (var netInterface in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            if (netInterface.OperationalStatus == OperationalStatus.Up &&
-                netInterface.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+        var candidate = NetworkInterface.GetAllNetworkInterfaces()
+            .Where(networkInterface =>
+                networkInterface.OperationalStatus == OperationalStatus.Up &&
+                networkInterface.NetworkInterfaceType is
+                    NetworkInterfaceType.Ethernet or NetworkInterfaceType.Wireless80211)
+            .SelectMany(networkInterface =>
             {
-                var props = netInterface.GetIPProperties();
-                foreach (var addr in props.UnicastAddresses)
-                {
-                    if (addr.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                var properties = networkInterface.GetIPProperties();
+
+                bool hasIpv4Gateway = properties.GatewayAddresses.Any(gateway =>
+                    gateway.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                    !gateway.Address.Equals(IPAddress.Any));
+
+                return properties.UnicastAddresses
+                    .Where(address => IsUsablePrivateIPv4(address.Address))
+                    .Select(address => new
                     {
-                        return addr.Address.ToString();
-                    }
-                }
-            }
+                        address.Address,
+                        HasIpv4Gateway = hasIpv4Gateway,
+                        IsWifi = networkInterface.NetworkInterfaceType ==
+                                 NetworkInterfaceType.Wireless80211
+                    });
+            })
+            .OrderByDescending(candidate => candidate.HasIpv4Gateway)
+            .ThenByDescending(candidate => candidate.IsWifi)
+            .ThenBy(candidate => candidate.Address.ToString(), StringComparer.Ordinal)
+            .FirstOrDefault();
+
+        return candidate?.Address.ToString() ?? "Not available";
+    }
+
+    private static bool IsUsablePrivateIPv4(IPAddress address)
+    {
+        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork ||
+            IPAddress.IsLoopback(address))
+        {
+            return false;
         }
-        return "127.0.0.1";
+
+        byte[] bytes = address.GetAddressBytes();
+
+        return bytes[0] == 10 ||
+               (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) ||
+               (bytes[0] == 192 && bytes[1] == 168);
     }
 
     protected override void OnClosed(EventArgs e)

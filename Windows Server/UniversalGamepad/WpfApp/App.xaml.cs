@@ -1,10 +1,10 @@
-﻿using System.Windows;
+﻿using System;
+using System.Windows;
+using Microsoft.Extensions.DependencyInjection;
+using UniversalGamepad.Core.Interfaces;
 using UniversalGamepad.Core.Services;
 using UniversalGamepad.Infrastructure.Network;
 using UniversalGamepad.Infrastructure.Services;
-using Microsoft.Extensions.DependencyInjection;
-using UniversalGamepad.Core.Interfaces;
-
 
 namespace UniversalGamepad.WpfApp;
 
@@ -25,6 +25,16 @@ public partial class App : Application
         mainWindow.Show();
     }
 
+    protected override void OnExit(ExitEventArgs e)
+    {
+        if (ServiceProvider is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
+
+        base.OnExit(e);
+    }
+
     private void ConfigureServices(IServiceCollection services)
     {
         services.AddSingleton<IInputListener, UdpInputListener>();
@@ -36,4 +46,3 @@ public partial class App : Application
         services.AddTransient<MainWindow>();
     }
 }
-

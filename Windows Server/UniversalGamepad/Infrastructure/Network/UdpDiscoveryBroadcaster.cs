@@ -15,6 +15,8 @@ public class UdpDiscoveryBroadcaster : IDiscoveryBroadcaster
     private Task? _broadcastTask;
     private readonly object _lockObject = new();
 
+    public event Action<Exception>? OnErrorOccurred;
+
     public void Start(int port)
     {
         lock (_lockObject)
@@ -36,15 +38,6 @@ public class UdpDiscoveryBroadcaster : IDiscoveryBroadcaster
             if (_cts != null)
             {
                 _cts.Cancel();
-                try
-                {
-                    _broadcastTask?.GetAwaiter().GetResult();
-                }
-                catch
-                {
-                }
-                _cts.Dispose();
-                _cts = null;
             }
 
             if (_broadcastSocket != null)
@@ -52,6 +45,20 @@ public class UdpDiscoveryBroadcaster : IDiscoveryBroadcaster
                 _broadcastSocket.Close();
                 _broadcastSocket.Dispose();
                 _broadcastSocket = null;
+            }
+
+            try
+            {
+                _broadcastTask?.GetAwaiter().GetResult();
+            }
+            catch
+            {
+            }
+
+            if (_cts != null)
+            {
+                _cts.Dispose();
+                _cts = null;
             }
         }
     }
@@ -77,8 +84,24 @@ public class UdpDiscoveryBroadcaster : IDiscoveryBroadcaster
             {
                 break;
             }
-            catch
+            catch (Exception ex)
             {
+                if (!ct.IsCancellationRequested)
+                {
+                    OnErrorOccurred?.Invoke(ex);
+                    try
+                    {
+                        await Task.Delay(2000, ct);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    break;
+                }
             }
         }
     }

@@ -23,11 +23,31 @@ public class UdpInputListener : IInputListener
         {
             if (_listenSocket != null) return;
 
-            _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-            _listenSocket.Bind(new IPEndPoint(IPAddress.Any, port));
+            try
+            {
+                _listenSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+                _listenSocket.Bind(new IPEndPoint(IPAddress.Any, port));
 
-            _cts = new CancellationTokenSource();
-            _listenTask = Task.Run(() => ListenLoopAsync(_cts.Token));
+                _cts = new CancellationTokenSource();
+                _listenTask = Task.Run(() => ListenLoopAsync(_cts.Token));
+            }
+            catch
+            {
+                if (_listenSocket != null)
+                {
+                    try { _listenSocket.Close(); } catch { }
+                    try { _listenSocket.Dispose(); } catch { }
+                    _listenSocket = null;
+                }
+
+                if (_cts != null)
+                {
+                    try { _cts.Dispose(); } catch { }
+                    _cts = null;
+                }
+
+                throw;
+            }
         }
     }
 
@@ -38,15 +58,6 @@ public class UdpInputListener : IInputListener
             if (_cts != null)
             {
                 _cts.Cancel();
-                try
-                {
-                    _listenTask?.GetAwaiter().GetResult();
-                }
-                catch
-                {
-                }
-                _cts.Dispose();
-                _cts = null;
             }
 
             if (_listenSocket != null)
@@ -55,8 +66,23 @@ public class UdpInputListener : IInputListener
                 _listenSocket.Dispose();
                 _listenSocket = null;
             }
+
+            try
+            {
+                _listenTask?.GetAwaiter().GetResult();
+            }
+            catch
+            {
+            }
+
+            if (_cts != null)
+            {
+                _cts.Dispose();
+                _cts = null;
+            }
         }
     }
+
 
     private async Task ListenLoopAsync(CancellationToken ct)
     {

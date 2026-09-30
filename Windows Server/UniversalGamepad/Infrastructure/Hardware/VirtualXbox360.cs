@@ -6,7 +6,7 @@ using UniversalGamepad.Core.Models;
 
 namespace UniversalGamepad.Infrastructure.Hardware;
 
-public class VirtualXbox360 : Core.Interfaces.IVirtualGamepad
+public class VirtualXbox360 : UniversalGamepad.Core.Interfaces.IVirtualGamepad
 {
     private readonly IXbox360Controller _controller;
 

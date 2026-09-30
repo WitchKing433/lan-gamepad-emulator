@@ -21,6 +21,7 @@ public class DynamicGamepadManager : IGamepadManager
     private CancellationTokenSource? _cts;
     private Task? _cleanupTask;
     private readonly bool[] _allocatedSlots = new bool[MaxControllers];
+    private bool _isInitialized;
 
     public event Action<int, bool, GamepadType?>? OnSlotChanged;
 
@@ -29,16 +30,26 @@ public class DynamicGamepadManager : IGamepadManager
         public int SlotIndex { get; set; }
         public UniversalGamepad.Core.Interfaces.IVirtualGamepad Gamepad { get; set; } = null!;
         public DateTime LastSeen { get; set; }
+        public object SessionLock { get; } = new();
+        public bool IsDisposed { get; set; }
     }
 
     private readonly ConcurrentDictionary<string, ClientSession> _sessions = new();
 
     public void Initialize()
     {
-        _vigemClient = new ViGEmClient();
-        _cts = new CancellationTokenSource();
-        _cleanupTask = Task.Run(() => CleanupLoopAsync(_cts.Token));
+        lock (_lockObject)
+        {
+            if (_isInitialized) return;
+
+            _vigemClient = new ViGEmClient();
+            _cts = new CancellationTokenSource();
+            _cleanupTask = Task.Run(() => CleanupLoopAsync(_cts.Token));
+
+            _isInitialized = true;
+        }
     }
+
 
     public void HandleClientPacket(string clientIp, ReadOnlySpan<byte> packet)
     {
@@ -111,17 +122,19 @@ public class DynamicGamepadManager : IGamepadManager
 
         if (messageType == 2 && payloadLength == 6 && _sessions.TryGetValue(clientIp, out var activeSession))
         {
-            activeSession.LastSeen = DateTime.UtcNow;
+            lock (activeSession.SessionLock)
+            {
+                if (activeSession.IsDisposed) return;
 
-            ushort buttons = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(3, 2));
-            var state = new GamepadState(buttons, packet[5], packet[6], packet[7], packet[8]);
+                activeSession.LastSeen = DateTime.UtcNow;
 
-            activeSession.Gamepad.Update(state);
+                ushort buttons = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(3, 2));
+                var state = new GamepadState(buttons, packet[5], packet[6], packet[7], packet[8]);
+
+                activeSession.Gamepad.Update(state);
+            }
         }
     }
-
-
-
 
     private async Task CleanupLoopAsync(CancellationToken ct)
     {
@@ -134,16 +147,29 @@ public class DynamicGamepadManager : IGamepadManager
 
                 foreach (var kp in _sessions.ToList())
                 {
-                    if ((now - kp.Value.LastSeen).TotalSeconds > 5)
+                    var session = kp.Value;
+
+                    if ((now - session.LastSeen).TotalSeconds > 5)
                     {
-                        if (_sessions.TryRemove(kp.Key, out var expiredSession))
+                        lock (session.SessionLock)
                         {
-                            lock (_lockObject)
+                            if ((now - session.LastSeen).TotalSeconds <= 5)
                             {
-                                _allocatedSlots[expiredSession.SlotIndex - 1] = false;
+                                continue;
                             }
-                            expiredSession.Gamepad.Disconnect();
-                            OnSlotChanged?.Invoke(expiredSession.SlotIndex, false, null);
+
+                            if (_sessions.TryRemove(kp.Key, out var expiredSession))
+                            {
+                                expiredSession.IsDisposed = true;
+
+                                lock (_lockObject)
+                                {
+                                    _allocatedSlots[expiredSession.SlotIndex - 1] = false;
+                                }
+
+                                expiredSession.Gamepad.Disconnect();
+                                OnSlotChanged?.Invoke(expiredSession.SlotIndex, false, null);
+                            }
                         }
                     }
                 }
@@ -160,32 +186,40 @@ public class DynamicGamepadManager : IGamepadManager
 
     public void Shutdown()
     {
-        if (_cts != null)
-        {
-            _cts.Cancel();
-            try
-            {
-                _cleanupTask?.GetAwaiter().GetResult();
-            }
-            catch
-            {
-            }
-            _cts.Dispose();
-            _cts = null;
-        }
-
-        foreach (var session in _sessions.Values)
-        {
-            session.Gamepad.Disconnect();
-            OnSlotChanged?.Invoke(session.SlotIndex, false, null);
-        }
-        _sessions.Clear();
-
         lock (_lockObject)
         {
+            if (!_isInitialized) return;
+
+            if (_cts != null)
+            {
+                _cts.Cancel();
+                try
+                {
+                    _cleanupTask?.GetAwaiter().GetResult();
+                }
+                catch
+                {
+                }
+                _cts.Dispose();
+                _cts = null;
+            }
+
+            foreach (var session in _sessions.Values)
+            {
+                lock (session.SessionLock)
+                {
+                    session.IsDisposed = true;
+                    session.Gamepad.Disconnect();
+                }
+                OnSlotChanged?.Invoke(session.SlotIndex, false, null);
+            }
+            _sessions.Clear();
+
             Array.Clear(_allocatedSlots, 0, _allocatedSlots.Length);
             _vigemClient?.Dispose();
             _vigemClient = null;
+
+            _isInitialized = false;
         }
     }
 }
